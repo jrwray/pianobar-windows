@@ -5,7 +5,18 @@
 # autoselect = 1
 
 user = <pandora_user>
-password = <pandora_password>
+
+# Password: pick one of these.
+#  1. Leave both lines commented out and pianobar asks for it at startup.
+#  2. Plain text in this file:
+#password = <pandora_password>
+#  3. Encrypted for your Windows account: run set-password.ps1 once, then
+#     uncomment this line.
+#password_command = powershell -NoProfile -ExecutionPolicy Bypass -File get-password.ps1
+
+# Run eventcmd.ps1 on events (song notifications and a play history).
+# Commands run from this folder, so relative paths work.
+#event_command = powershell -NoProfile -ExecutionPolicy Bypass -File eventcmd.ps1
 
 width = 220
 height = 60
@@ -88,5 +99,5 @@ format_msg_debug = [90m%s[0m
 #     launch_media_select, launch_app1, launch_app2
 #
 # Example bindings:
-#hk_act_songpausetoggle = media_play_pause
-#hk_act_songnext = media_next_track
+hk_act_songpausetoggle = media_play_pause
+hk_act_songnext = media_next_track

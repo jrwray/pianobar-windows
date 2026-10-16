@@ -24,6 +24,7 @@ THE SOFTWARE.
 #pragma once
 
 #include <stdbool.h>
+#include <windows.h>
 
 #include <piano.h>
 
@@ -47,6 +48,7 @@ void BarUiPrintSong (const BarSettings_t *, const PianoSong_t *,
 		const PianoStation_t *);
 size_t BarUiListSongs (const BarApp_t * const app,
 		const PianoSong_t *song, const char *filter);
+bool BarUiSpawn (const char *, HANDLE, HANDLE, PROCESS_INFORMATION *);
 void BarUiStartEventCmd (const BarSettings_t *, const char *,
 		const PianoStation_t *, const PianoSong_t *, const player2_t * const,
 		PianoStation_t *, PianoReturn_t);
