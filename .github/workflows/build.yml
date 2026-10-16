@@ -30,9 +30,10 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
+      # The projects xcopy headers into a shared folder, so build serially.
       - name: Build
         run: >
-          msbuild pianobar.sln /m /nologo /verbosity:minimal
+          msbuild pianobar.sln /nologo /verbosity:minimal
           /p:Configuration=Release /p:Platform=${{ matrix.platform }}
           /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
 
