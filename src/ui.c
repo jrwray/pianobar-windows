@@ -31,6 +31,8 @@ THE SOFTWARE.
 #include "console.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <io.h>
 
 typedef int (*BarSortFunc_t) (const void *, const void *);
 
@@ -718,7 +720,64 @@ size_t BarUiListSongs (const BarApp_t * const app,
 	return i;
 }
 
+/*	Start an external helper (password_command, event_command)
+ *	Runs cmdline in the config directory without a console window. The
+ *	child's stdin and stdout are connected to the given handles (NULL
+ *	means the NUL device).
+ *	@param command line, UTF-8
+ *	@param handle for child's stdin or NULL
+ *	@param handle for child's stdout or NULL
+ *	@param receives process information, caller closes handles
+ *	@return true on success
+ */
+bool BarUiSpawn (const char *cmdline, HANDLE in, HANDLE out,
+		PROCESS_INFORMATION *pi) {
+	SECURITY_ATTRIBUTES sa = { sizeof (sa), NULL, TRUE };
+	STARTUPINFOW si;
+	HANDLE nul;
+	wchar_t *wcmd, *wdir = NULL;
+	const char *dir = getenv ("XDG_CONFIG_HOME");
+	int len;
+	bool ret;
+
+	len = MultiByteToWideChar (CP_UTF8, 0, cmdline, -1, NULL, 0);
+	if (len <= 0) {
+		return false;
+	}
+	wcmd = malloc (len * sizeof (*wcmd));
+	MultiByteToWideChar (CP_UTF8, 0, cmdline, -1, wcmd, len);
+
+	if (dir != NULL && (len = MultiByteToWideChar (CP_UTF8, 0, dir, -1,
+			NULL, 0)) > 0) {
+		wdir = malloc (len * sizeof (*wdir));
+		MultiByteToWideChar (CP_UTF8, 0, dir, -1, wdir, len);
+	}
+
+	nul = CreateFileW (L"NUL", GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+
+	memset (&si, 0, sizeof (si));
+	si.cb = sizeof (si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdInput = in != NULL ? in : nul;
+	si.hStdOutput = out != NULL ? out : nul;
+	si.hStdError = nul;
+
+	memset (pi, 0, sizeof (*pi));
+	ret = CreateProcessW (NULL, wcmd, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+			NULL, wdir, &si, pi) != 0;
+
+	if (nul != INVALID_HANDLE_VALUE) {
+		CloseHandle (nul);
+	}
+	free (wcmd);
+	free (wdir);
+	return ret;
+}
+
 /*	Excute external event handler
+ *	Runs "<event_command> <type>" and writes the event data to its stdin,
+ *	like upstream pianobar. Does not wait for the handler to finish.
  *	@param settings containing the cmdline
  *	@param event type
  *	@param current station
@@ -729,102 +788,113 @@ void BarUiStartEventCmd (const BarSettings_t *settings, const char *type,
 		const PianoStation_t *curStation, const PianoSong_t *curSong,
 		const player2_t * const player, PianoStation_t *stations,
 		PianoReturn_t pRet) {
-	//pid_t chld;
-	//int pipeFd[2];
+	SECURITY_ATTRIBUTES sa = { sizeof (sa), NULL, TRUE };
+	PROCESS_INFORMATION pi;
+	HANDLE readPipe, writePipe;
+	PianoStation_t *songStation = NULL;
+	FILE *pipeWriteFd;
+	char *cmdline;
+	size_t cmdlineLen;
+	int fd;
+	bool started;
 
-	//if (settings->eventCmd == NULL) {
+	if (settings->eventCmd == NULL) {
 		/* nothing to do... */
 		return;
-	//}
+	}
 
-	//if (pipe (pipeFd) == -1) {
-	//	BarUiMsg (settings, MSG_ERR, "Cannot create eventcmd pipe. (%s)\n", strerror (errno));
-	//	return;
-	//}
+	if (!CreatePipe (&readPipe, &writePipe, &sa, 64 * 1024)) {
+		BarUiMsg (settings, MSG_ERR, "Cannot create eventcmd pipe.\n");
+		return;
+	}
+	/* only the read end goes to the child */
+	SetHandleInformation (writePipe, HANDLE_FLAG_INHERIT, 0);
 
-	//chld = fork ();
-	//if (chld == 0) {
-	//	/* child */
-	//	close (pipeFd[1]);
-	//	dup2 (pipeFd[0], fileno (stdin));
-	//	execl (settings->eventCmd, settings->eventCmd, type, (char *) NULL);
-	//	BarUiMsg (settings, MSG_ERR, "Cannot start eventcmd. (%s)\n", strerror (errno));
-	//	close (pipeFd[0]);
-	//	exit (1);
-	//} else if (chld == -1) {
-	//	BarUiMsg (settings, MSG_ERR, "Cannot fork eventcmd. (%s)\n", strerror (errno));
-	//} else {
-	//	/* parent */
-	//	int status;
-	//	PianoStation_t *songStation = NULL;
-	//	FILE *pipeWriteFd;
+	cmdlineLen = strlen (settings->eventCmd) + 1 + strlen (type) + 1;
+	cmdline = malloc (cmdlineLen);
+	snprintf (cmdline, cmdlineLen, "%s %s", settings->eventCmd, type);
+	started = BarUiSpawn (cmdline, readPipe, NULL, &pi);
+	free (cmdline);
+	CloseHandle (readPipe);
 
-	//	close (pipeFd[0]);
+	if (!started) {
+		BarUiMsg (settings, MSG_ERR, "Cannot start eventcmd. (%lu)\n",
+				GetLastError ());
+		CloseHandle (writePipe);
+		return;
+	}
+	CloseHandle (pi.hThread);
+	CloseHandle (pi.hProcess);
 
-	//	pipeWriteFd = fdopen (pipeFd[1], "w");
+	fd = _open_osfhandle ((intptr_t) writePipe, 0);
+	if (fd == -1 || (pipeWriteFd = _fdopen (fd, "w")) == NULL) {
+		if (fd != -1) {
+			_close (fd);
+		} else {
+			CloseHandle (writePipe);
+		}
+		return;
+	}
 
-	//	if (curSong != NULL && stations != NULL && curStation != NULL &&
-	//			curStation->isQuickMix) {
-	//		songStation = PianoFindStationById (stations, curSong->stationId);
-	//	}
+	if (curSong != NULL && stations != NULL && curStation != NULL &&
+			curStation->isQuickMix) {
+		songStation = PianoFindStationById (stations, curSong->stationId);
+	}
 
-	//	fprintf (pipeWriteFd,
-	//			"artist=%s\n"
-	//			"title=%s\n"
-	//			"album=%s\n"
-	//			"coverArt=%s\n"
-	//			"stationName=%s\n"
-	//			"songStationName=%s\n"
-	//			"pRet=%i\n"
-	//			"pRetStr=%s\n"
-	//			"wRet=%i\n"
-	//			"wRetStr=%s\n"
-	//			"songDuration=%u\n"
-	//			"songPlayed=%u\n"
-	//			"rating=%i\n"
-	//			"detailUrl=%s\n",
-	//			curSong == NULL ? "" : curSong->artist,
-	//			curSong == NULL ? "" : curSong->title,
-	//			curSong == NULL ? "" : curSong->album,
-	//			curSong == NULL ? "" : curSong->coverArt,
-	//			curStation == NULL ? "" : curStation->name,
-	//			songStation == NULL ? "" : songStation->name,
-	//			pRet,
-	//			PianoErrorToStr (pRet),
-	//			wRet,
-	//			curl_easy_strerror (wRet),
-	//			player->songDuration,
-	//			player->songPlayed,
-	//			curSong == NULL ? PIANO_RATE_NONE : curSong->rating,
-	//			curSong == NULL ? "" : curSong->detailUrl
-	//			);
+	fprintf (pipeWriteFd,
+			"artist=%s\n"
+			"title=%s\n"
+			"album=%s\n"
+			"coverArt=%s\n"
+			"stationName=%s\n"
+			"songStationName=%s\n"
+			"pRet=%i\n"
+			"pRetStr=%s\n"
+			"wRet=0\n"
+			"wRetStr=\n"
+			"songDuration=%u\n"
+			"songPlayed=%u\n"
+			"rating=%i\n"
+			"detailUrl=%s\n",
+			curSong == NULL ? "" : curSong->artist,
+			curSong == NULL ? "" : curSong->title,
+			curSong == NULL ? "" : curSong->album,
+			curSong == NULL ? "" : curSong->coverArt,
+			curStation == NULL ? "" : curStation->name,
+			songStation == NULL ? "" : songStation->name,
+			pRet,
+			PianoErrorToStr (pRet),
+			player == NULL || *player == NULL ? 0 :
+				(unsigned int) BarPlayer2GetDuration (*player),
+			player == NULL || *player == NULL ? 0 :
+				(unsigned int) BarPlayer2GetTime (*player),
+			curSong == NULL ? PIANO_RATE_NONE : curSong->rating,
+			curSong == NULL ? "" : curSong->detailUrl
+			);
 
-	//	if (stations != NULL) {
-	//		/* send station list */
-	//		PianoStation_t **sortedStations = NULL;
-	//		size_t stationCount;
-	//		sortedStations = BarSortedStations (stations, &stationCount,
-	//				settings->sortOrder);
-	//		assert (sortedStations != NULL);
+	if (stations != NULL) {
+		/* send station list */
+		PianoStation_t **sortedStations = NULL;
+		size_t stationCount;
+		sortedStations = BarSortedStations (stations, &stationCount,
+				settings->sortOrder);
+		assert (sortedStations != NULL);
 
-	//		fprintf (pipeWriteFd, "stationCount=%zd\n", stationCount);
+		fprintf (pipeWriteFd, "stationCount=%zd\n", stationCount);
 
-	//		for (size_t i = 0; i < stationCount; i++) {
-	//			const PianoStation_t *currStation = sortedStations[i];
-	//			fprintf (pipeWriteFd, "station%zd=%s\n", i,
-	//					currStation->name);
-	//		}
-	//		free (sortedStations);
-	//	} else {
-	//		const char * const msg = "stationCount=0\n";
-	//		fwrite (msg, sizeof (*msg), strlen (msg), pipeWriteFd);
-	//	}
-	//
-	//	/* closes pipeFd[1] as well */
-	//	fclose (pipeWriteFd);
-	//	/* wait to get rid of the zombie */
-	//	waitpid (chld, &status, 0);
-	//}
+		for (size_t i = 0; i < stationCount; i++) {
+			const PianoStation_t *currStation = sortedStations[i];
+			fprintf (pipeWriteFd, "station%zd=%s\n", i,
+					currStation->name);
+		}
+		free (sortedStations);
+	} else {
+		const char * const msg = "stationCount=0\n";
+		fwrite (msg, sizeof (*msg), strlen (msg), pipeWriteFd);
+	}
+
+	/* closes writePipe as well */
+	fclose (pipeWriteFd);
 }
 
 /*	prepend song to history

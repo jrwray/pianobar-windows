@@ -95,54 +95,60 @@ static bool BarMainGetLoginCredentials(BarSettings_t *settings,
 		}
         else
         {
-			//pid_t chld;
-			//int pipeFd[2];
+            SECURITY_ATTRIBUTES sa = { sizeof (sa), NULL, TRUE };
+            PROCESS_INFORMATION pi;
+            HANDLE readPipe, writePipe;
+            DWORD got, total = 0, status = 1;
+            bool started;
 
-            //BarUiMsg (settings, MSG_INFO, "Requesting password from external helper... ");
+            BarUiMsg (settings, MSG_INFO, "Requesting password from external helper... ");
 
-            //if (pipe (pipeFd) == -1) {
-            //	BarUiMsg (settings, MSG_NONE, "Error: %s\n", strerror (errno));
-            //	return false;
-            //}
+            if (!CreatePipe (&readPipe, &writePipe, &sa, 0)) {
+                BarUiMsg (settings, MSG_NONE, "Error: cannot create pipe.\n");
+                return false;
+            }
+            /* only the write end goes to the child */
+            SetHandleInformation (readPipe, HANDLE_FLAG_INHERIT, 0);
 
-            //chld = fork ();
-            //if (chld == 0) {
-            //	/* child */
-            //	close (pipeFd[0]);
-            //	dup2 (pipeFd[1], fileno (stdout));
-            //	execl ("/bin/sh", "/bin/sh", "-c", settings->passwordCmd, (char *) NULL);
-            //	BarUiMsg (settings, MSG_NONE, "Error: %s\n", strerror (errno));
-            //	close (pipeFd[1]);
-            //	exit (1);
-            //} else if (chld == -1) {
-            //	BarUiMsg (settings, MSG_NONE, "Error: %s\n", strerror (errno));
-            //	return false;
-            //} else {
-            //	/* parent */
-            //	int status;
+            started = BarUiSpawn (settings->passwordCmd, NULL, writePipe, &pi);
+            CloseHandle (writePipe);
+            if (!started) {
+                BarUiMsg (settings, MSG_NONE, "Error: cannot start helper (%lu).\n",
+                        GetLastError ());
+                CloseHandle (readPipe);
+                return false;
+            }
 
-            //	close (pipeFd[1]);
-            //	memset (passBuf, 0, sizeof (passBuf));
-            //	read (pipeFd[0], passBuf, sizeof (passBuf)-1);
-            //	close (pipeFd[0]);
+            memset (passBuf, 0, sizeof (passBuf));
+            while (total < sizeof (passBuf) - 1 &&
+                    ReadFile (readPipe, passBuf + total,
+                    (DWORD) (sizeof (passBuf) - 1 - total), &got, NULL) &&
+                    got > 0) {
+                total += got;
+            }
+            CloseHandle (readPipe);
 
-            //	/* drop trailing newlines */
-            //	ssize_t len = strlen (passBuf)-1;
-            //	while (len >= 0 && passBuf[len] == '\n') {
-            //		passBuf[len] = '\0';
-            //		--len;
-            //	}
+            WaitForSingleObject (pi.hProcess, INFINITE);
+            GetExitCodeProcess (pi.hProcess, &status);
+            CloseHandle (pi.hThread);
+            CloseHandle (pi.hProcess);
 
-            //	waitpid (chld, &status, 0);
-            //	if (WEXITSTATUS (status) == 0) {
-            //		settings->password = strdup (passBuf);
-            //		BarUiMsg (settings, MSG_NONE, "Ok.\n");
-            //	} else {
-            //		BarUiMsg (settings, MSG_NONE, "Error: Exit status %i.\n", WEXITSTATUS (status));
-            //		return false;
-            //	}
-            //}
-            return false;
+            /* drop trailing newlines */
+            int len = (int) strlen (passBuf) - 1;
+            while (len >= 0 && (passBuf[len] == '\n' || passBuf[len] == '\r')) {
+                passBuf[len] = '\0';
+                --len;
+            }
+
+            if (status == 0 && len >= 0) {
+                settings->password = strdup (passBuf);
+                SecureZeroMemory (passBuf, sizeof (passBuf));
+                BarUiMsg (settings, MSG_NONE, "Ok.\n");
+            } else {
+                SecureZeroMemory (passBuf, sizeof (passBuf));
+                BarUiMsg (settings, MSG_NONE, "Error: Exit status %lu.\n", status);
+                return false;
+            }
         } /* end else passwordCmd */
     }
 

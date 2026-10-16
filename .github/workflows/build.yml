@@ -1,0 +1,58 @@
+name: build
+
+on:
+  push:
+    branches: [develop]
+    tags: ['*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        platform: [x64]
+    steps:
+      - name: Check out build environment
+        uses: actions/checkout@v4
+        with:
+          repository: thedmd/pianobar-windows-build
+          ref: 7773001bdf58be625d2ed3b2efca9c82fafbed89
+
+      - name: Check out pianobar source
+        uses: actions/checkout@v4
+        with:
+          path: pianobar/src
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: >
+          msbuild pianobar.sln /m /nologo /verbosity:minimal
+          /p:Configuration=Release /p:Platform=${{ matrix.platform }}
+          /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter pianobar.exe | Select-Object -First 1
+          if (-not $exe) { throw "pianobar.exe not found" }
+          New-Item -ItemType Directory dist/pianobar | Out-Null
+          Copy-Item $exe.FullName dist/pianobar/
+          Copy-Item pianobar/src/release/* dist/pianobar/
+          Compress-Archive dist/pianobar/* dist/pianobar-${{ matrix.platform }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pianobar-${{ matrix.platform }}
+          path: dist/pianobar/
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/pianobar-${{ matrix.platform }}.zip --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes
